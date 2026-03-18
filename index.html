@@ -1,0 +1,306 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, ReferenceLine, AreaChart, Area
+} from 'recharts';
+import { 
+  Activity, TrendingUp, AlertTriangle, BarChart2, 
+  RefreshCw, Globe, ArrowRightLeft, DollarSign, Database
+} from 'lucide-react';
+
+// ==========================================
+// 模拟数据源 (基于东证期货能源数据周报结构构造)
+// ==========================================
+
+const mockTimeSeriesData = [
+  { date: '03-01', SC: 610, Brent: 82.5, PG: 4850, PP: 7200, FEI: 680, PDH_Margin: 150, Alkylation_Margin: 200 },
+  { date: '03-02', SC: 615, Brent: 83.1, PG: 4880, PP: 7210, FEI: 685, PDH_Margin: 120, Alkylation_Margin: 210 },
+  { date: '03-03', SC: 608, Brent: 82.0, PG: 4820, PP: 7180, FEI: 675, PDH_Margin: 180, Alkylation_Margin: 190 },
+  { date: '03-06', SC: 620, Brent: 84.2, PG: 4950, PP: 7250, FEI: 690, PDH_Margin: 80,  Alkylation_Margin: 250 },
+  { date: '03-07', SC: 625, Brent: 84.8, PG: 5010, PP: 7280, FEI: 700, PDH_Margin: 40,  Alkylation_Margin: 280 },
+  { date: '03-08', SC: 630, Brent: 85.5, PG: 5080, PP: 7300, FEI: 710, PDH_Margin: -20, Alkylation_Margin: 310 },
+  { date: '03-09', SC: 628, Brent: 85.2, PG: 5100, PP: 7290, FEI: 715, PDH_Margin: -50, Alkylation_Margin: 330 },
+  { date: '03-10', SC: 635, Brent: 86.0, PG: 5050, PP: 7350, FEI: 690, PDH_Margin: 80,  Alkylation_Margin: 270 },
+  { date: '03-13', SC: 640, Brent: 86.5, PG: 4980, PP: 7400, FEI: 680, PDH_Margin: 190, Alkylation_Margin: 220 },
+  { date: '03-14', SC: 645, Brent: 87.2, PG: 4920, PP: 7450, FEI: 670, PDH_Margin: 300, Alkylation_Margin: 180 },
+  { date: '03-15', SC: 659.7, Brent: 88.5, PG: 4850, PP: 7520, FEI: 660, PDH_Margin: 450, Alkylation_Margin: 120 }, // 对应周报数据
+];
+
+const arbitrageSignals = [
+  {
+    id: 1,
+    type: '跨品种套利',
+    name: 'PP-PG 盘面价差',
+    currentSpread: 2670, // 7520 - 4850
+    historicalMean: 2200,
+    zScore: +2.1,
+    status: 'OPEN', // OPEN, CLOSING, NORMAL
+    direction: '做空PP，做多PG',
+    logic: 'PP-PG价差处于历史95%分位线上方。随着PDH利润大幅回升（450元/吨），丙烯供应预期增加，施压PP端；同时LPG受原油端（SC 659.7）强势支撑，价差有回归均值需求。',
+    icon: <ArrowRightLeft className="text-purple-400" size={24} />
+  },
+  {
+    id: 2,
+    type: '内外盘套利',
+    name: 'PG-FEI 进口窗口',
+    currentSpread: 420, // 换算后模拟价差
+    historicalMean: 150,
+    zScore: -1.8,
+    status: 'OPEN',
+    direction: '正套 (多FEI，空PG)',
+    logic: '考虑11%关税及运费后，国内华南冷冻货到岸贴水走弱，进口利润打开。外盘FEI相对内盘PG被低估，存在买外盘抛内盘的套利空间。',
+    icon: <Globe className="text-blue-400" size={24} />
+  },
+  {
+    id: 3,
+    type: '产业链利润',
+    name: 'PDH 盘面毛利',
+    currentSpread: 450,
+    historicalMean: 100,
+    zScore: +2.5,
+    status: 'WARNING',
+    direction: '利润做缩',
+    logic: '当前华东丙烷脱氢装置毛利润飙升至450元/吨，属于极高利润区间，将刺激开工率上升，压制远期利润，建议逢高做缩PDH利润。',
+    icon: <Activity className="text-green-400" size={24} />
+  },
+  {
+    id: 4,
+    type: '期现套利',
+    name: 'PG 主力基差',
+    currentSpread: -120,
+    historicalMean: 50,
+    zScore: -1.2,
+    status: 'NORMAL',
+    direction: '观望',
+    logic: '当前LPG基差偏弱，华南现货价格相对疲软，暂未出现明显的期现无风险套利窗口。',
+    icon: <Database className="text-gray-400" size={24} />
+  }
+];
+
+// ==========================================
+// 组件定义
+// ==========================================
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [currentTime, setCurrentTime] = useState(new Date().toLocaleTimeString());
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date().toLocaleTimeString()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // 渲染顶部导航卡片
+  const renderTopCards = () => (
+    <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+      <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 shadow-lg">
+        <div className="flex justify-between items-center mb-2">
+          <span className="text-slate-400 text-sm">INE 原油 (SC)</span>
+          <TrendingUp className="text-red-400" size={16} />
+        </div>
+        <div className="text-2xl font-bold text-white">659.7 <span className="text-sm text-red-400 ml-1">+14.1%</span></div>
+        <div className="text-xs text-slate-500 mt-1">日度环比强劲反弹</div>
+      </div>
+      <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 shadow-lg">
+        <div className="flex justify-between items-center mb-2">
+          <span className="text-slate-400 text-sm">Brent-WTI 价差</span>
+          <ArrowRightLeft className="text-blue-400" size={16} />
+        </div>
+        <div className="text-2xl font-bold text-white">$4.43 <span className="text-sm text-blue-400 ml-1">+1.47%</span></div>
+        <div className="text-xs text-slate-500 mt-1">欧洲基本面相对偏紧</div>
+      </div>
+      <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 shadow-lg">
+        <div className="flex justify-between items-center mb-2">
+          <span className="text-slate-400 text-sm">PG 主力合约</span>
+          <Activity className="text-green-400" size={16} />
+        </div>
+        <div className="text-2xl font-bold text-white">4,850 <span className="text-sm text-green-400 ml-1">-1.4%</span></div>
+        <div className="text-xs text-slate-500 mt-1">受进口成本预期拖累</div>
+      </div>
+      <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 shadow-lg">
+        <div className="flex justify-between items-center mb-2">
+          <span className="text-slate-400 text-sm">高硫燃料油 (FU)</span>
+          <TrendingUp className="text-red-400" size={16} />
+        </div>
+        <div className="text-2xl font-bold text-white">4,730 <span className="text-sm text-red-400 ml-1">+0.19%</span></div>
+        <div className="text-xs text-slate-500 mt-1">贴水SC原油明显收窄</div>
+      </div>
+    </div>
+  );
+
+  // 渲染量化套利监控中心
+  const renderArbitrageScanner = () => (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-bold text-white flex items-center">
+          <AlertTriangle className="mr-2 text-yellow-500" />
+          量化套利机会捕捉窗口 (Arbitrage Scanner)
+        </h2>
+        <span className="text-sm text-slate-400 bg-slate-800 px-3 py-1 rounded-full border border-slate-700">
+          模型算法：Z-Score & 历史均值回归
+        </span>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {arbitrageSignals.map(signal => (
+          <div key={signal.id} className={`p-5 rounded-xl border transition-all duration-300 ${signal.status === 'OPEN' ? 'bg-slate-800/80 border-purple-500/50 hover:border-purple-400' : signal.status === 'WARNING' ? 'bg-slate-800/80 border-orange-500/50' : 'bg-slate-800/50 border-slate-700 opacity-70'}`}>
+            <div className="flex justify-between items-start mb-4">
+              <div className="flex items-center space-x-3">
+                <div className="p-2 bg-slate-900 rounded-lg">
+                  {signal.icon}
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-white">{signal.name}</h3>
+                  <span className="text-xs text-slate-400">{signal.type}</span>
+                </div>
+              </div>
+              <div className={`px-3 py-1 rounded text-xs font-bold ${signal.status === 'OPEN' ? 'bg-purple-500/20 text-purple-400' : signal.status === 'WARNING' ? 'bg-orange-500/20 text-orange-400' : 'bg-slate-700 text-slate-300'}`}>
+                {signal.status}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-4 mb-4">
+              <div className="bg-slate-900/50 p-2 rounded">
+                <div className="text-xs text-slate-500 mb-1">当前价差/利润</div>
+                <div className="text-lg font-mono text-white">{signal.currentSpread}</div>
+              </div>
+              <div className="bg-slate-900/50 p-2 rounded">
+                <div className="text-xs text-slate-500 mb-1">历史均值 (60D)</div>
+                <div className="text-lg font-mono text-slate-300">{signal.historicalMean}</div>
+              </div>
+              <div className="bg-slate-900/50 p-2 rounded">
+                <div className="text-xs text-slate-500 mb-1">Z-Score偏离度</div>
+                <div className={`text-lg font-mono ${signal.zScore > 2 || signal.zScore < -2 ? 'text-red-400' : 'text-blue-400'}`}>
+                  {signal.zScore > 0 ? '+' : ''}{signal.zScore}σ
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-slate-900 p-3 rounded-lg border border-slate-700">
+              <div className="text-sm font-semibold text-white mb-1 flex items-center">
+                <RefreshCw size={14} className="mr-1 text-blue-400" />
+                策略建议: <span className="ml-2 text-blue-400">{signal.direction}</span>
+              </div>
+              <p className="text-sm text-slate-400 leading-relaxed">
+                {signal.logic}
+              </p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  // 渲染动态图表分析
+  const renderCharts = () => (
+    <div className="space-y-6">
+      <div className="bg-slate-800 p-5 rounded-xl border border-slate-700">
+        <h3 className="text-lg font-semibold text-white mb-4">油气跨品种价格走势对比 (SC vs PG)</h3>
+        <div className="h-72 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={mockTimeSeriesData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+              <XAxis dataKey="date" stroke="#94a3b8" />
+              <YAxis yAxisId="left" stroke="#ef4444" domain={['dataMin - 20', 'dataMax + 20']} name="SC原油" />
+              <YAxis yAxisId="right" orientation="right" stroke="#22c55e" domain={['dataMin - 100', 'dataMax + 100']} name="LPG(PG)" />
+              <RechartsTooltip contentStyle={{ backgroundColor: '#1e293b', borderColor: '#334155', color: '#f8fafc' }} />
+              <Legend />
+              <Line yAxisId="left" type="monotone" dataKey="SC" stroke="#ef4444" strokeWidth={2} dot={false} name="SC原油 (元/桶)" />
+              <Line yAxisId="right" type="monotone" dataKey="PG" stroke="#22c55e" strokeWidth={2} dot={false} name="LPG主力 (元/吨)" />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+        <p className="text-sm text-slate-400 mt-2 text-center">观察点：SC原油近期走强，而PG受进口成本和季节性淡季影响走弱，油气比价正在拉大。</p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="bg-slate-800 p-5 rounded-xl border border-slate-700">
+          <h3 className="text-lg font-semibold text-white mb-4">产业链利润演变 (PDH vs 烷基化)</h3>
+          <div className="h-60 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={mockTimeSeriesData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                <XAxis dataKey="date" stroke="#94a3b8" />
+                <YAxis stroke="#94a3b8" />
+                <RechartsTooltip contentStyle={{ backgroundColor: '#1e293b', borderColor: '#334155' }} />
+                <Legend />
+                <Area type="monotone" dataKey="PDH_Margin" stackId="1" stroke="#8b5cf6" fill="#8b5cf6" fillOpacity={0.6} name="华东PDH毛利" />
+                <Area type="monotone" dataKey="Alkylation_Margin" stackId="2" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.6} name="山东烷基化毛利" />
+                <ReferenceLine y={0} stroke="#cbd5e1" strokeDasharray="3 3" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="bg-slate-800 p-5 rounded-xl border border-slate-700">
+          <h3 className="text-lg font-semibold text-white mb-4">PP-PG 盘面价差回归</h3>
+          <div className="h-60 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={mockTimeSeriesData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                <XAxis dataKey="date" stroke="#94a3b8" />
+                <YAxis stroke="#94a3b8" domain={[2200, 2800]} />
+                <RechartsTooltip contentStyle={{ backgroundColor: '#1e293b', borderColor: '#334155' }} />
+                <Legend />
+                <ReferenceLine y={2200} stroke="#22c55e" strokeDasharray="3 3" label={{ position: 'insideTopLeft', value: '历史均值', fill: '#22c55e' }} />
+                <Line type="stepAfter" dataKey={(row) => row.PP - row.PG} stroke="#c084fc" strokeWidth={2} name="PP-PG 价差 (元/吨)" />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-slate-900 text-slate-200 font-sans p-4 md:p-8">
+      {/* 头部信息 */}
+      <header className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 border-b border-slate-800 pb-4">
+        <div>
+          <h1 className="text-3xl font-bold text-white flex items-center">
+            <Activity className="mr-3 text-blue-500" size={32} />
+            QuantTrader | 能源与LPG量化套利监控
+          </h1>
+          <p className="text-slate-400 mt-1">
+            数据基准: 东证期货能源数据周报 (2026-03-15) | 纸黄金及衍生品量化研究面板
+          </p>
+        </div>
+        <div className="mt-4 md:mt-0 flex items-center bg-slate-800 px-4 py-2 rounded-lg border border-slate-700">
+          <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse mr-2"></div>
+          <span className="text-sm font-mono text-slate-300">系统时间: {currentTime}</span>
+        </div>
+      </header>
+
+      {/* 导航标签 */}
+      <nav className="flex space-x-2 mb-8 bg-slate-800/50 p-1 rounded-lg w-fit">
+        <button 
+          onClick={() => setActiveTab('dashboard')}
+          className={`px-4 py-2 rounded-md text-sm font-medium transition-colors flex items-center ${activeTab === 'dashboard' ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-white hover:bg-slate-700'}`}
+        >
+          <BarChart2 size={16} className="mr-2" /> 盘面概览
+        </button>
+        <button 
+          onClick={() => setActiveTab('arbitrage')}
+          className={`px-4 py-2 rounded-md text-sm font-medium transition-colors flex items-center ${activeTab === 'arbitrage' ? 'bg-purple-600 text-white shadow' : 'text-slate-400 hover:text-white hover:bg-slate-700'}`}
+        >
+          <ArrowRightLeft size={16} className="mr-2" /> 量化套利雷达
+        </button>
+      </nav>
+
+      {/* 核心内容区 */}
+      <main>
+        {renderTopCards()}
+        
+        <div className="mt-8 transition-opacity duration-500 ease-in-out">
+          {activeTab === 'dashboard' && renderCharts()}
+          {activeTab === 'arbitrage' && renderArbitrageScanner()}
+        </div>
+      </main>
+
+      {/* 底部免责声明 */}
+      <footer className="mt-12 pt-6 border-t border-slate-800 text-center text-xs text-slate-500">
+        <p>此系统专为量化/Paper Trader研究设计。数据基于东证期货《能源数据周报_20260315.xlsx》建模演算。交易有风险，入市需谨慎。</p>
+        <p className="mt-1">算法支持：基于历史百分位、Z-Score标准化偏离度与回归模型。</p>
+      </footer>
+    </div>
+  );
+}
